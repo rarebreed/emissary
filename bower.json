@@ -1,0 +1,29 @@
+{
+  "name": "emissary",
+  "ignore": [
+    "**/.*",
+    "node_modules",
+    "bower_components",
+    "output"
+  ],
+  "dependencies": {
+    "purescript-console": "^2.0.0",
+    "purescript-foreign": "^3.0.1",
+    "purescript-lists": "^3.2.1",
+    "purescript-arrays": "^3.0.1",
+    "purescript-maps": "^2.0.1",
+    "purescript-eff": "^2.0.0",
+    "purescript-control": "^2.0.0",
+    "purescript-node-child-process": "^3.0.0",
+    "purescript-maybe": "^2.0.1",
+    "purescript-node-http": "^3.0.1",
+    "purescript-node-streams": "^2.0.0",
+    "purescript-foldable-traversable": "^2.0.0",
+    "purescript-prelude": "^2.1.0",
+    "purescript-node-buffer": "^2.0.0",
+    "purescript-partial": "^1.1.2"
+  },
+  "devDependencies": {
+    "purescript-psci-support": "^2.0.0"
+  }
+}
