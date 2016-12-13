@@ -27,7 +27,9 @@ default' :: String -> Maybe String -> String
 default' _ (Just d) = d
 default' def _ = def
 
--- | Basically a wrapper around the spawn command.  Sets a default exit and data handler
+-- | Basically a wrapper around the spawn command.
+-- | Takes a command, an array of arguments, and a record of options to pass to spawn.
+-- | Sets a default exit and data handler
 -- TODO: figure out a way to combine stdout and stderr
 launch :: String -> Array String -> SpawnOptions -> CPEffect
 launch cmd args opts = do
@@ -104,9 +106,6 @@ echo "NEW_XUNIT=${NEW_XUNIT}" >> test-output/polarize.properties
 echo "JENKINSJOBS=${BUILD_URL}" >> test-output/polarize.properties
 echo "NOTES=${BUILD_URL}TestNG_Report" >> test-output/polarize.properties
 -}
-
-
-
 
 -- | The main script that kicks everything off
 main :: ProcEff
