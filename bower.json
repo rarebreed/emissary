@@ -21,7 +21,10 @@
     "purescript-foldable-traversable": "^2.0.0",
     "purescript-prelude": "^2.1.0",
     "purescript-node-buffer": "^2.0.0",
-    "purescript-partial": "^1.1.2"
+    "purescript-partial": "^1.1.2",
+    "purescript-routing": "^3.0.0",
+    "purescript-node-process": "^3.0.0",
+    "purescript-random": "^2.0.0"
   },
   "devDependencies": {
     "purescript-psci-support": "^2.0.0"

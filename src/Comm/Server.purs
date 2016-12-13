@@ -16,8 +16,9 @@ handler :: forall eff. Request -> Response -> Eff (http :: HTTP | eff) Unit
 handler req res = do
   setStatusCode res 200
   -- Notice we dont have to do let/in here.  The inputStream and outputStream are in scope without the 'in'
-  let inputStream  = requestAsStream req  --
+  let inputStream  = requestAsStream req  -- Convert the Request and Response objects as node streams
       outputStream = responseAsStream res
+  -- FIXME: Change this to a better routing model.
   case requestMethod req of
     "GET" -> do
       let html = foldMap (_ <> "\n")
@@ -31,6 +32,7 @@ handler req res = do
       writeString outputStream UTF8 html (pure unit)
       end outputStream (pure unit)
     "POST" -> void $ pipe inputStream outputStream
+    -- FIXME: Add all other request types like HEAD
     _ -> unsafeCrashWith "Unexpected HTTP method"
 
 testBasic :: forall eff. Eff (console :: CONSOLE, http :: HTTP | eff) Unit
@@ -38,4 +40,3 @@ testBasic = do
   server <- createServer handler
   listen server { hostname: "localhost", port: 8080, backlog: Nothing } $ void do
     log "Listening on port 8080."
-    -- simpleReq "http://localhost:8080"
