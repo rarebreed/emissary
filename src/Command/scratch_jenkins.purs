@@ -11,7 +11,7 @@ import Data.Foldable (foldl)
 import Data.Foreign.Keys (keys)
 import Data.Map (Map, fromFoldable)
 import Data.Maybe (Maybe(..))
-import Data.String.Regex (Regex, replace)
+import Data.String.Regex (Regex, regex, replace)
 import Data.String.Regex.Flags (noFlags)
 import Data.Tuple (Tuple(..))
 import Node.Buffer (BUFFER)
@@ -87,9 +87,12 @@ compile = do
   launch "lein" ["compile"] defaultSpawnOptions
   log "end of lein compile"
 
-getClasspath :: Eff (cp :: CHILD_PROCESS, console :: CONSOLE, err :: EXCEPTION, buffer :: BUFFER | e) String
+getClasspath :: forall e. Eff (cp :: CHILD_PROCESS, console :: CONSOLE, err :: EXCEPTION, buffer :: BUFFER | e) String
 getClasspath = do
+  -- TODO: Need to redo this since launch returns Unit instead of String.  Need to change the onData handler so that
+  -- it saves the stdout to a string.
   launch "lein" ["classpath"] defaultSpawnOptions
+  pure "TODO"
 
 
 -- | The main script that kicks everything off
@@ -114,13 +117,13 @@ main = do
                     then ""
                     else default' "" rpm_urls
       git_args = ["checkout", "upstream/" <> (default' "master" auto_branch)]
-      default = jenkins_url <> "view/Scratch/job/" <> job_name <> "/" <>  build_number <>
-                "/artifact/test-output/testng-polarion.xml"
+      -- TODO: Figure out how to lift this
+      default = jenkins_url <> "view/Scratch/job/" <> job_name <> "/" <>  build_number <> "/artifact/test-output/testng-polarion.xml"
       current_xunit = case c_xunit of
                         Nothing ->  default
                         (Just "") -> default
                         (Just x) -> x
-      re = Regex """^https"""
+      re = regex """^https"""
       current' = replace re "http" current_xunit
 
   log $ "server_branch = " <> server_branch'
