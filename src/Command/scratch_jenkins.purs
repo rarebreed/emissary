@@ -5,15 +5,13 @@ import Node.Buffer as Buffer
 import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Console (log, CONSOLE)
 import Control.Monad.Eff.Exception (EXCEPTION)
-import DOM.Node.Node (lookupNamespaceURI)
-import Data.Either (Either(..))
+import Data.Either (Either(..), either)
 import Data.Foldable (foldl)
-import Data.Foreign.Keys (keys)
-import Data.Map (Map, fromFoldable)
+-- import Data.Map (Map, fromFoldable)
 import Data.Maybe (Maybe(..))
 import Data.String.Regex (Regex, regex, replace)
 import Data.String.Regex.Flags (noFlags)
-import Data.Tuple (Tuple(..))
+-- import Data.Tuple (Tuple(..))
 import Node.Buffer (BUFFER)
 import Node.ChildProcess (CHILD_PROCESS, SpawnOptions, defaultSpawnOptions, Exit(..), spawn, onExit, stdout)
 import Node.Encoding (Encoding(UTF8))
@@ -94,11 +92,22 @@ getClasspath = do
   launch "lein" ["classpath"] defaultSpawnOptions
   pure "TODO"
 
+envVars :: Array String
+envVars = [ "QUICK_BUILD"
+          , "AUTOMATION_BRANCH"
+          , "SERVER_BRANCH"
+          , "RPM_URLS"
+          , "JENKINS_URL"
+          , "BUILD_NUMBER"
+          , "JOB_NAME"
+          , "CURRENT_XUNIT"
+          ]
 
 -- | The main script that kicks everything off
 main :: ProcEff
 main = do
-  -- This just feels really ugly.  I should be able to put all these strings into a map.
+  -- This just feels really ugly.  I should be able to put all these strings into a map.  I'd prefer to have these
+  -- stored in a map where the keys are QUICK_BUILD etc, and the values are from the env.
   quick_build <- lookupEnv "QUICK_BUILD"
   auto_branch <- lookupEnv "AUTOMATION_BRANCH"
   server_branch <- lookupEnv "SERVER_BRANCH"
@@ -117,18 +126,33 @@ main = do
                     then ""
                     else default' "" rpm_urls
       git_args = ["checkout", "upstream/" <> (default' "master" auto_branch)]
-      -- TODO: Figure out how to lift this
-      default = jenkins_url <> "view/Scratch/job/" <> job_name <> "/" <>  build_number <> "/artifact/test-output/testng-polarion.xml"
+
+      -- All of these will be concatenated into a Maybe String
+      parts = [jenkins_url, Just "view/Scratch/job/", job_name, Just "/", build_number,
+               Just "/artifact/test-output/testng-polarion.xml"]
+      accum :: Maybe String
+      accum = foldl (\acc n -> (<>) <$> acc <*> n) (Just "") parts
+
+      default :: Either String String
+      default = case accum of
+                  Nothing -> Left ""
+                  (Just s) -> Right s
+
+      current_xunit :: String
       current_xunit = case c_xunit of
-                        Nothing ->  default
-                        (Just "") -> default
+                        (Just "") -> either id id default
                         (Just x) -> x
-      re = regex """^https"""
-      current' = replace re "http" current_xunit
+                        Nothing ->  either id id default
+
+      re :: Either String Regex
+      re = regex """^https""" noFlags
+      current' = replace <$> re <*> pure "http" <*> pure current_xunit
 
   log $ "server_branch = " <> server_branch'
   log $ foldl (\acc n -> acc <> n <> ",") "git_args = [" git_args <> "]"
-  log $ "current' = " <> current'
+  log $ "current' = " <> case current' of
+                           (Left e) -> e
+                           (Right r) -> r
 
   -- Do the checkout, grab the keys, cleanup and compile
   gitCheckout git_args
