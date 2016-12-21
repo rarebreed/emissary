@@ -114,6 +114,7 @@ main = do
   quick_build <- lookupEnv "QUICK_BUILD"
   auto_branch <- lookupEnv "AUTOMATION_BRANCH"
   server_branch <- lookupEnv "SERVER_BRANCH"
+  test_suites <- lookupEnv "TEST_SUITES"
   rpm_urls <- lookupEnv "RPM_URLS"
   jenkins_url <- lookupEnv "JENKINS_URL"
   build_number <- lookupEnv "BUILD_NUMBER"
@@ -158,11 +159,12 @@ main = do
   cleanup
   compile
 
-  -- Set all the JAVA_ARGS
-
   -- Kick off the test
   -- java -cp "`lein classpath`" "${JAVAARGS[@]}" org.testng.TestNG "${TESTNGARGS[@]}"  $TEST_SUITES || true
-
+  -- TODO: Set any JAVA_ARGS needed.  Since we are using the automation.properties file, we need some way to set this
+  -- TODO: Set the TESTNGARGS and get the TEST_SUITES from the test_suites Maybe String
+  -- TODO: Need to create a version of spawn with an onData that captures stdout to a string.  However onData seems to
+  --       return Unit.
 
   {- There will be a file called polarize.properties that exists in $WORKSPACE.  If CURRENT_XUNIT from the job has no
   value, use the default.  Then write the following into the polarize.properties file.
