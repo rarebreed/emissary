@@ -7,11 +7,9 @@ import Control.Monad.Eff.Console (log, CONSOLE)
 import Control.Monad.Eff.Exception (EXCEPTION)
 import Data.Either (Either(..), either)
 import Data.Foldable (foldl)
--- import Data.Map (Map, fromFoldable)
 import Data.Maybe (Maybe(..))
 import Data.String.Regex (Regex, regex, replace)
 import Data.String.Regex.Flags (noFlags)
--- import Data.Tuple (Tuple(..))
 import Node.Buffer (BUFFER)
 import Node.ChildProcess (CHILD_PROCESS, SpawnOptions, defaultSpawnOptions, Exit(..), spawn, onExit, stdout)
 import Node.Encoding (Encoding(UTF8))
@@ -38,6 +36,11 @@ default' :: String -> Maybe String -> String
 default' _ (Just d) = d
 default' def _ = def
 
+-- | If the arg is Nothing, use the 2nd arg as the default which goes into Left, otherwise use the first arg in Right
+orDefault :: Maybe String -> String -> Either String String
+orDefault Nothing default = Left default
+orDefault (Just r) _ = Right r
+
 -- | Basically a wrapper around the spawn command.
 -- | Takes a command, an array of arguments, and a record of options to pass to spawn.
 -- | Sets a default exit and data handler
@@ -47,7 +50,7 @@ launch cmd args opts = do
   let defaultExitHdlr exit = case exit of
         Normally x -> log $ "Got exit code of: " <> show x
         _ -> log $ "Exited due to signal: " <> show exit
-      -- TODO: explain what this function does
+      -- TODO: explain what this function does.
       defaultDataHdlr cp = onData (stdout cp) (Buffer.toString UTF8 >=> log)
   cmd' <- spawn cmd args opts
   onExit cmd' defaultExitHdlr
@@ -130,19 +133,13 @@ main = do
       -- All of these will be concatenated into a Maybe String
       parts = [jenkins_url, Just "view/Scratch/job/", job_name, Just "/", build_number,
                Just "/artifact/test-output/testng-polarion.xml"]
-      accum :: Maybe String
-      accum = foldl (\acc n -> (<>) <$> acc <*> n) (Just "") parts
-
-      default :: Either String String
-      default = case accum of
-                  Nothing -> Left ""
-                  (Just s) -> Right s
+      accum = foldl (\acc n -> append <$> acc <*> n) (Just "") parts
 
       current_xunit :: String
       current_xunit = case c_xunit of
-                        (Just "") -> either id id default
+                        (Just "") -> either id id (orDefault accum "")
                         (Just x) -> x
-                        Nothing ->  either id id default
+                        Nothing ->  either id id (orDefault accum "")
 
       re :: Either String Regex
       re = regex """^https""" noFlags
