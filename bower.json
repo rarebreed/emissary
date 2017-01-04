@@ -24,7 +24,10 @@
     "purescript-partial": "^1.1.2",
     "purescript-routing": "^3.0.0",
     "purescript-node-process": "^3.0.0",
-    "purescript-random": "^2.0.0"
+    "purescript-random": "^2.0.0",
+    "purescript-st": "^2.0.0",
+    "purescript-datetime": "^2.0.0",
+    "purescript-now": "^2.0.0"
   },
   "devDependencies": {
     "purescript-psci-support": "^2.0.0"

@@ -1,23 +1,30 @@
 module Command.Starter where
 
 import Prelude
-import Node.Buffer as Buffer
 import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Console (log, CONSOLE)
 import Control.Monad.Eff.Exception (EXCEPTION)
+import Control.Monad.Eff.Ref (newRef, readRef, modifyRef, Ref, REF)
+--import Control.Monad.ST (ST, STRef, modifySTRef, newSTRef, readSTRef, runST)
+--import Data.DateTime.Locale (LocalTime, LocalValue(..))
 import Data.Either (Either(..), either)
 import Data.Foldable (foldl)
 import Data.Maybe (Maybe(..))
 import Data.String.Regex (Regex, regex, replace)
 import Data.String.Regex.Flags (noFlags)
-import Node.Buffer (BUFFER)
-import Node.ChildProcess (CHILD_PROCESS, SpawnOptions, defaultSpawnOptions, Exit(..), spawn, onExit, stdout)
-import Node.Encoding (Encoding(UTF8))
+import Node.Buffer (BUFFER, toString, Buffer)
+import Node.ChildProcess (CHILD_PROCESS, ChildProcess, SpawnOptions, defaultSpawnOptions, Exit(..), spawn, onExit, stdout)
+import Node.Encoding (Encoding(..))
 import Node.Process (lookupEnv, PROCESS)
 import Node.Stream (onData)
 
+
 -- I need to understand extensible effects better, because this should be the more generalized type of ProcEff.
-type CPEffect = forall e.  Eff (cp :: CHILD_PROCESS, console :: CONSOLE, err :: EXCEPTION, buffer :: BUFFER | e) Unit
+type CPEffect = forall e. Eff ( cp :: CHILD_PROCESS
+                              , console :: CONSOLE
+                              , err :: EXCEPTION
+                              , buffer :: BUFFER | e) ChildProcess
+type CmdEffect a = forall e a. Eff (cp :: CHILD_PROCESS, console :: CONSOLE, err :: EXCEPTION, buffer :: BUFFER | e) a
 type ProcEff = forall e. Eff ( process :: PROCESS
                              , cp :: CHILD_PROCESS
                              , console :: CONSOLE
@@ -41,21 +48,71 @@ orDefault :: Maybe String -> String -> Either String String
 orDefault Nothing default = Left default
 orDefault (Just r) _ = Right r
 
+-- | A default exit handler for launching commands
+defaultExitHdlr :: forall e. Exit -> Eff (console :: CONSOLE | e) Unit
+defaultExitHdlr exit = case exit of
+      Normally x -> log $ "Got exit code of: " <> show x
+      _ -> log $ "Exited due to signal: " <> show exit
+
 -- | Basically a wrapper around the spawn command.
 -- | Takes a command, an array of arguments, and a record of options to pass to spawn.
 -- | Sets a default exit and data handler
 -- TODO: figure out a way to combine stdout and stderr
-launch :: String -> Array String -> SpawnOptions -> CPEffect
+--launch :: String -> Array String -> SpawnOptions ->  CPEffect
+launch :: forall e
+        . String
+       -> Array String
+       -> SpawnOptions
+       -> Eff (cp :: CHILD_PROCESS, console :: CONSOLE, err :: EXCEPTION, buffer :: BUFFER | e) ChildProcess
 launch cmd args opts = do
-  let defaultExitHdlr exit = case exit of
-        Normally x -> log $ "Got exit code of: " <> show x
-        _ -> log $ "Exited due to signal: " <> show exit
-      -- TODO: explain what this function does.
-      defaultDataHdlr cp = onData (stdout cp) (Buffer.toString UTF8 >=> log)
   cmd' <- spawn cmd args opts
   onExit cmd' defaultExitHdlr
-  defaultDataHdlr cmd'
+  -- onData takes a readable stream, and a function which takes a Buffer and returns an Eff of Unit.  But I need to save
+  -- off the output somewhere AND send it to log.
   log $ "done with " <> cmd
+  pure cmd'
+
+
+-- | Function to save data from a buffer into an STRef
+onDataSave :: forall e
+            . Ref String
+           -> Buffer
+           -> Eff ( ref :: REF, buffer :: BUFFER, console :: CONSOLE | e) Unit
+onDataSave ref buff = do
+  bdata <- toString UTF8 buff
+  modified <- modifyRef ref \current -> current <> bdata
+  asOfNow <- readRef ref
+  log $ "Data as of now:\n" <> asOfNow
+  pure unit
+
+-- | Return type object that contains the ChildProcess value and a mutable saved state
+-- newtype SubProc h = SubProc { process :: ChildProcess, saved :: STRef h String }
+-- | A command which will launch a subprocess and save the stdout of the running process.
+-- | Takes the command to run, an array of arguments, and a record of the options for the command to run with
+run :: forall e
+     . Ref String                  -- The mutable saved output of the command
+    -> String                      -- The command to run
+    -> Array String                -- The array of arguments to pass to the command
+    -> SpawnOptions                -- An object containing the options to run the process with
+    -> Eff ( ref :: REF
+           , console :: CONSOLE
+           , cp :: CHILD_PROCESS
+           , buffer :: BUFFER
+           , err :: EXCEPTION
+           | e
+           )
+           ChildProcess
+run ref cmd args opts = do
+  let cb = onDataSave ref
+  cmd' <- spawn cmd args opts
+  onExit cmd' defaultExitHdlr
+  onData (stdout cmd') cb
+  log $ "done with " <> cmd
+  pure cmd'
+
+-- TODO: Write a function that can pipe information to the stdin of the child process, for example if the child process
+-- prompts in an interactive manner
+
 
 -- | gets the pub and pvt keys
 -- FIXME: replace this with a regular http GET instead of shelling out to wget
@@ -81,17 +138,17 @@ cleanup = do
   log "end of cleanup"
 
 -- | compile with lein
-compile :: CPEffect
+compile :: forall e. Eff (cp :: CHILD_PROCESS, console :: CONSOLE, err :: EXCEPTION, buffer :: BUFFER | e) Unit
 compile = do
   launch "lein" ["clean"] defaultSpawnOptions
   launch "lein" ["deps"] defaultSpawnOptions
   launch "lein" ["compile"] defaultSpawnOptions
   log "end of lein compile"
 
+-- TODO: Need to redo this since launch returns Unit instead of String.  Need to change the onData handler so that
+-- it saves the stdout to a string.
 getClasspath :: forall e. Eff (cp :: CHILD_PROCESS, console :: CONSOLE, err :: EXCEPTION, buffer :: BUFFER | e) String
 getClasspath = do
-  -- TODO: Need to redo this since launch returns Unit instead of String.  Need to change the onData handler so that
-  -- it saves the stdout to a string.
   launch "lein" ["classpath"] defaultSpawnOptions
   pure "TODO"
 
@@ -175,3 +232,13 @@ main = do
   -}
 
   log "Done"
+
+
+testing :: Eff (ref :: REF, console :: CONSOLE, buffer :: BUFFER, cp :: CHILD_PROCESS, err :: EXCEPTION) Unit
+testing = do
+  --iostat <- launch "iostat" ["2", "2"] defaultSpawnOptions
+  --onData (stdout iostat) (Buffer.toString UTF8 >=> log)
+  st <- newRef ""
+  proc <- run st "iostat" ["2", "2"] defaultSpawnOptions
+  output <- readRef st
+  log $ "Done testing:\n" <> output
