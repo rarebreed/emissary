@@ -4,16 +4,18 @@ import Prelude
 import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Console (log, CONSOLE)
 import Control.Monad.Eff.Exception (EXCEPTION)
-import Control.Monad.Eff.Ref (newRef, readRef, modifyRef, Ref, REF)
---import Control.Monad.ST (ST, STRef, modifySTRef, newSTRef, readSTRef, runST)
---import Data.DateTime.Locale (LocalTime, LocalValue(..))
+import Control.Monad.Eff.Ref (REF, Ref, writeRef, newRef)
+import Control.Monad.ST (ST, STRef, modifySTRef, newSTRef, runST)
+
+--import Data.DateTime.Locale (LocalValue, LocalTime)
 import Data.Either (Either(..), either)
 import Data.Foldable (foldl)
 import Data.Maybe (Maybe(..))
 import Data.String.Regex (Regex, regex, replace)
 import Data.String.Regex.Flags (noFlags)
+
 import Node.Buffer (BUFFER, toString, Buffer)
-import Node.ChildProcess (CHILD_PROCESS, ChildProcess, SpawnOptions, defaultSpawnOptions, Exit(..), spawn, onExit, stdout)
+import Node.ChildProcess (CHILD_PROCESS, ChildProcess, Exit(..), SpawnOptions, defaultSpawnOptions, onExit, spawn, stdout)
 import Node.Encoding (Encoding(..))
 import Node.Process (lookupEnv, PROCESS)
 import Node.Stream (onData)
@@ -54,6 +56,17 @@ defaultExitHdlr exit = case exit of
       Normally x -> log $ "Got exit code of: " <> show x
       _ -> log $ "Exited due to signal: " <> show exit
 
+-- | An exit handler which takes a reference of an initial value of an empty string, indicating the (unfinished) state.
+-- | Allows the caller of onExitState to pass in a ref and check this ref
+onExitState :: forall e. Ref String -> Exit -> Eff (ref :: REF, console :: CONSOLE | e) Unit
+onExitState ref exit = case exit of
+  Normally x -> do
+    writeRef ref $ show x
+    log $ "Got exit code of: " <> show x
+  BySignal sig ->  do
+    writeRef ref $ "" <> show sig
+    log $ "Exited abnormally due to signal: " <> show exit
+
 -- | Basically a wrapper around the spawn command.
 -- | Takes a command, an array of arguments, and a record of options to pass to spawn.
 -- | Sets a default exit and data handler
@@ -72,40 +85,41 @@ launch cmd args opts = do
   log $ "done with " <> cmd
   pure cmd'
 
-
 -- | Function to save data from a buffer into an STRef
-onDataSave :: forall e
-            . Ref String
+onDataSave :: forall h e
+            . STRef h String
            -> Buffer
-           -> Eff ( ref :: REF, buffer :: BUFFER, console :: CONSOLE | e) Unit
+           -> Eff ( st :: ST h, buffer :: BUFFER, console :: CONSOLE | e) Unit
 onDataSave ref buff = do
   bdata <- toString UTF8 buff
-  modified <- modifyRef ref \current -> current <> bdata
-  asOfNow <- readRef ref
-  log $ "Data as of now:\n" <> asOfNow
+  modified <- modifySTRef ref \current -> current <> bdata
+  -- log $ "Data as of now:\n" <> modified
   pure unit
 
 -- | Return type object that contains the ChildProcess value and a mutable saved state
 -- newtype SubProc h = SubProc { process :: ChildProcess, saved :: STRef h String }
 -- | A command which will launch a subprocess and save the stdout of the running process.
 -- | Takes the command to run, an array of arguments, and a record of the options for the command to run with
-run :: forall e
-     . Ref String                  -- The mutable saved output of the command
+run :: forall e h
+     . STRef h String         -- The saved output of the command
     -> String                      -- The command to run
     -> Array String                -- The array of arguments to pass to the command
     -> SpawnOptions                -- An object containing the options to run the process with
-    -> Eff ( ref :: REF
+    -> Eff ( st :: ST h
            , console :: CONSOLE
            , cp :: CHILD_PROCESS
            , buffer :: BUFFER
            , err :: EXCEPTION
+           , ref :: REF
            | e
            )
            ChildProcess
-run ref cmd args opts = do
-  let cb = onDataSave ref
+run st cmd args opts = do
+  procState <- newRef ""
+  let cb = onDataSave st
+      eh = onExitState procState
   cmd' <- spawn cmd args opts
-  onExit cmd' defaultExitHdlr
+  onExit cmd' eh
   onData (stdout cmd') cb
   log $ "done with " <> cmd
   pure cmd'
@@ -233,12 +247,28 @@ main = do
 
   log "Done"
 
+simpletest :: Eff (console :: CONSOLE, cp :: CHILD_PROCESS, buffer :: BUFFER, err :: EXCEPTION, ref :: REF) Unit
+simpletest = do
+  runST (testing)
 
-testing :: Eff (ref :: REF, console :: CONSOLE, buffer :: BUFFER, cp :: CHILD_PROCESS, err :: EXCEPTION) Unit
+testing :: forall h
+         . Eff ( st :: ST h
+               , console :: CONSOLE
+               , buffer :: BUFFER
+               , cp :: CHILD_PROCESS
+               , err :: EXCEPTION
+               , ref :: REF
+               ) Unit
 testing = do
-  --iostat <- launch "iostat" ["2", "2"] defaultSpawnOptions
-  --onData (stdout iostat) (Buffer.toString UTF8 >=> log)
-  st <- newRef ""
+  st <- newSTRef ""
+  procState <- newRef ""
   proc <- run st "iostat" ["2", "2"] defaultSpawnOptions
-  output <- readRef st
-  log $ "Done testing:\n" <> output
+  let eh = onExitState procState
+  onExit proc eh
+  -- TODO: The problem is that if I try to get the st like this:
+  --   output <- readSTRef st
+  --   log output
+  -- the problem is that the proc ChildProcess hasn't finished running, but I'm already asking for the state (which has
+  -- the so far saved output from the proc process).  So, I believe what I need to do here is use purescript-aff and
+  -- call run via the later function.
+  pure unit
