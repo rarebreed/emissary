@@ -1,13 +1,13 @@
 module Command.Starter where
 
 import Prelude
+
 import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Console (log, CONSOLE)
 import Control.Monad.Eff.Exception (EXCEPTION)
-import Control.Monad.Eff.Ref (REF, Ref, writeRef, newRef)
-import Control.Monad.ST (ST, STRef, modifySTRef, newSTRef, runST)
+import Control.Monad.Eff.Ref (REF, Ref, readRef, writeRef, newRef, modifyRef)
+import Control.Monad.ST (ST, STRef, modifySTRef, newSTRef, readSTRef, runST)
 
---import Data.DateTime.Locale (LocalValue, LocalTime)
 import Data.Either (Either(..), either)
 import Data.Foldable (foldl)
 import Data.Maybe (Maybe(..))
@@ -19,26 +19,6 @@ import Node.ChildProcess (CHILD_PROCESS, ChildProcess, Exit(..), SpawnOptions, d
 import Node.Encoding (Encoding(..))
 import Node.Process (lookupEnv, PROCESS)
 import Node.Stream (onData)
-
-
--- I need to understand extensible effects better, because this should be the more generalized type of ProcEff.
-type CPEffect = forall e. Eff ( cp :: CHILD_PROCESS
-                              , console :: CONSOLE
-                              , err :: EXCEPTION
-                              , buffer :: BUFFER | e) ChildProcess
-type CmdEffect a = forall e a. Eff (cp :: CHILD_PROCESS, console :: CONSOLE, err :: EXCEPTION, buffer :: BUFFER | e) a
-type ProcEff = forall e. Eff ( process :: PROCESS
-                             , cp :: CHILD_PROCESS
-                             , console :: CONSOLE
-                             , err :: EXCEPTION
-                             , buffer :: BUFFER | e
-                             ) Unit
-type EffProc = forall e. Eff ( process :: PROCESS
-                             , cp :: CHILD_PROCESS
-                             , console :: CONSOLE
-                             , err :: EXCEPTION
-                             , buffer :: BUFFER | e
-                             ) String
 
 -- | First arg is default if second arg is Nothing
 default' :: String -> Maybe String -> String
@@ -71,7 +51,8 @@ onExitState ref exit = case exit of
 -- | Takes a command, an array of arguments, and a record of options to pass to spawn.
 -- | Sets a default exit and data handler
 -- TODO: figure out a way to combine stdout and stderr
---launch :: String -> Array String -> SpawnOptions ->  CPEffect
+--launch :: String -> Array String -> SpawnOptions ->  Eff ( cp :: CHILD_PROCESS, console :: CONSOLE, err :: EXCEPTION
+--                                                         , buffer :: BUFFER | e) ChildProcess
 launch :: forall e
         . String
        -> Array String
@@ -82,31 +63,31 @@ launch cmd args opts = do
   onExit cmd' defaultExitHdlr
   -- onData takes a readable stream, and a function which takes a Buffer and returns an Eff of Unit.  But I need to save
   -- off the output somewhere AND send it to log.
+  onData (stdout cmd') (toString UTF8 >=> log)
   log $ "done with " <> cmd
   pure cmd'
 
 -- | Function to save data from a buffer into an STRef
-onDataSave :: forall h e
-            . STRef h String
+onDataSave :: forall e
+            . Ref String
            -> Buffer
-           -> Eff ( st :: ST h, buffer :: BUFFER, console :: CONSOLE | e) Unit
+           -> Eff ( ref :: REF, buffer :: BUFFER, console :: CONSOLE | e) Unit
 onDataSave ref buff = do
   bdata <- toString UTF8 buff
-  modified <- modifySTRef ref \current -> current <> bdata
-  -- log $ "Data as of now:\n" <> modified
+  modified <- modifyRef ref \current -> current <> bdata
+  --log $ "Data as of now:\n" <> modified
   pure unit
 
 -- | Return type object that contains the ChildProcess value and a mutable saved state
 -- newtype SubProc h = SubProc { process :: ChildProcess, saved :: STRef h String }
 -- | A command which will launch a subprocess and save the stdout of the running process.
 -- | Takes the command to run, an array of arguments, and a record of the options for the command to run with
-run :: forall e h
-     . STRef h String         -- The saved output of the command
+run :: forall e
+     . Ref String              -- The saved output of the command
     -> String                      -- The command to run
     -> Array String                -- The array of arguments to pass to the command
     -> SpawnOptions                -- An object containing the options to run the process with
-    -> Eff ( st :: ST h
-           , console :: CONSOLE
+    -> Eff ( console :: CONSOLE
            , cp :: CHILD_PROCESS
            , buffer :: BUFFER
            , err :: EXCEPTION
@@ -128,20 +109,34 @@ run st cmd args opts = do
 -- prompts in an interactive manner
 
 
--- | gets the pub and pvt keys
 -- FIXME: replace this with a regular http GET instead of shelling out to wget
-getAutoKey :: String -> String -> CPEffect
+-- | gets the pub and pvt keys
+getAutoKey :: forall e
+            . String                      -- | name of the key
+           -> String                      -- | where to save file to
+           -> Eff ( cp :: CHILD_PROCESS
+                  , console :: CONSOLE
+                  , err :: EXCEPTION
+                  , buffer :: BUFFER
+                  | e) ChildProcess
 getAutoKey keyname output = do
   let args = ["-nv", "http://auto-services.usersys.redhat.com/rhsm/keys/" <> keyname, "-O", output]
   launch "wget" args defaultSpawnOptions
 
 -- | Does a git checkout in the current working directory
-gitCheckout :: Array String -> CPEffect
+gitCheckout :: forall e
+             . Array String
+            -> Eff ( cp :: CHILD_PROCESS, console :: CONSOLE, err :: EXCEPTION, buffer :: BUFFER | e) ChildProcess
 gitCheckout args = do
   launch "git" args defaultSpawnOptions
 
 -- | Remove reults from a prior run and avoid failed jobs due to missing result files
-cleanup :: ProcEff
+cleanup :: forall e
+         . Eff ( process :: PROCESS
+               , cp :: CHILD_PROCESS
+               , console :: CONSOLE
+               , err :: EXCEPTION
+               , buffer :: BUFFER | e) Unit
 cleanup = do
   workspace <- lookupEnv "WORKSPACE"
   -- TODO: replace this with purescript-node-fs unlink command
@@ -178,7 +173,12 @@ envVars = [ "QUICK_BUILD"
           ]
 
 -- | The main script that kicks everything off
-main :: ProcEff
+main :: forall e. Eff ( process :: PROCESS
+                      , cp :: CHILD_PROCESS
+                      , console :: CONSOLE
+                      , err :: EXCEPTION
+                      , buffer :: BUFFER
+                      | e) Unit
 main = do
   -- This just feels really ugly.  I should be able to put all these strings into a map.  I'd prefer to have these
   -- stored in a map where the keys are QUICK_BUILD etc, and the values are from the env.
@@ -247,27 +247,35 @@ main = do
 
   log "Done"
 
-simpletest :: Eff (console :: CONSOLE, cp :: CHILD_PROCESS, buffer :: BUFFER, err :: EXCEPTION, ref :: REF) Unit
-simpletest = do
-  runST (testing)
 
-testing :: forall h
-         . Eff ( st :: ST h
-               , console :: CONSOLE
+run2 :: forall e
+      . String
+     -> Array String
+     -> Eff ( console :: CONSOLE, cp :: CHILD_PROCESS, buffer :: BUFFER, err :: EXCEPTION, ref :: REF | e) (Ref String)
+run2 cmd args = do
+  st <- newRef ""
+  proc <- spawn cmd args defaultSpawnOptions
+  let dataSave buff = do
+        bdata <- toString UTF8 buff
+        modified <- modifyRef st \current -> current <> bdata
+        --log $ "Data as of now:\n" <> modified
+        pure unit
+  onData (stdout proc) dataSave
+  pure st
+
+
+testing :: Eff ( console :: CONSOLE
                , buffer :: BUFFER
                , cp :: CHILD_PROCESS
                , err :: EXCEPTION
                , ref :: REF
                ) Unit
 testing = do
-  st <- newSTRef ""
-  procState <- newRef ""
-  proc <- run st "iostat" ["2", "2"] defaultSpawnOptions
-  let eh = onExitState procState
-  onExit proc eh
+  st <- newRef ""
+  proc <- run st "iostat" ["2", "5"] defaultSpawnOptions
   -- TODO: The problem is that if I try to get the st like this:
-  --   output <- readSTRef st
-  --   log output
+  output <- readRef st
+  log output
   -- the problem is that the proc ChildProcess hasn't finished running, but I'm already asking for the state (which has
   -- the so far saved output from the proc process).  So, I believe what I need to do here is use purescript-aff and
   -- call run via the later function.
