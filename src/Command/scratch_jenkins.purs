@@ -2,6 +2,7 @@ module Command.Starter where
 
 import Prelude
 
+import Control.Monad.Aff
 import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Console (log, CONSOLE)
 import Control.Monad.Eff.Exception (EXCEPTION)
@@ -246,23 +247,6 @@ main = do
   -}
 
   log "Done"
-
-
-run2 :: forall e
-      . String
-     -> Array String
-     -> Eff ( console :: CONSOLE, cp :: CHILD_PROCESS, buffer :: BUFFER, err :: EXCEPTION, ref :: REF | e) (Ref String)
-run2 cmd args = do
-  st <- newRef ""
-  proc <- spawn cmd args defaultSpawnOptions
-  let dataSave buff = do
-        bdata <- toString UTF8 buff
-        modified <- modifyRef st \current -> current <> bdata
-        --log $ "Data as of now:\n" <> modified
-        pure unit
-  onData (stdout proc) dataSave
-  pure st
-
 
 testing :: Eff ( console :: CONSOLE
                , buffer :: BUFFER
