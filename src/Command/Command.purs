@@ -9,32 +9,26 @@
 -- | is a problem for callbacks.  The onExit function has the same problem.
 module Command where
 
-import Prelude
-
-import Node.ChildProcess (SpawnOptions, defaultSpawnOptions, spawn, ChildProcess, CHILD_PROCESS, onExit, Exit(..))
-import Node.Stream (Duplex, onData)
-import Node.Buffer (Buffer, BUFFER, toString)
-import Node.Encoding (Encoding(..))
-
+import Control.Monad.Aff
 import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Console (log, CONSOLE)
-import Control.Monad.Eff.Ref (Ref, REF, newRef, writeRef, modifyRef)
-import Control.Monad.Eff.Exception (Error, error, message)
-
-import Data.Either
+import Control.Monad.Eff.Exception (EXCEPTION)
+import Control.Monad.Eff.Ref (Ref, REF, newRef, writeRef, readRef, modifyRef)
 import Data.Maybe (Maybe(..))
+import Node.Buffer (Buffer, BUFFER, toString)
+import Node.ChildProcess (SpawnOptions, defaultSpawnOptions, spawn, ChildProcess, CHILD_PROCESS, onExit, Exit(..), stdout)
+import Node.Encoding (Encoding(..))
+import Node.Stream (onData)
+import Prelude (Unit, bind, pure, show, unit, ($), (<>))
 
 -- | Represents how to run a command
 newtype Command = Command  { command :: String
-                            , args :: Array String
-                            , opts :: SpawnOptions
-                            , combineErr :: Boolean
-                            , success :: forall a e. (a -> Eff e Unit)
-                            , failure :: forall e. (Error -> Eff e Unit)
-                            , output :: Ref String -- FIXME: Make this a selectable type (eg Duplex, Socket, or other source)
-                            , process :: Ref ChildProcess
-                            , next :: Maybe Command
-                            }
+                           , args :: Array String
+                           , opts :: SpawnOptions
+                           , combineErr :: Boolean
+                           , output :: Ref String -- FIXME: Make this a selectable type (eg Duplex, Socket, or other source)
+                           , process :: Ref (Maybe ChildProcess)
+                           }
 
 -- | Function to save data from a buffer into an Ref
 onDataSave :: forall e
@@ -44,42 +38,79 @@ onDataSave :: forall e
 onDataSave ref buff = do
   bdata <- toString UTF8 buff
   modified <- modifyRef ref \current -> current <> bdata
-  --log $ "Data as of now:\n" <> modified
+  combined <- readRef ref
+  log bdata
   pure unit
 
 
-defaultFailure :: forall e. Error -> Eff e Unit
-defaultFailure err = do log $ message err
+type CmdEff = forall e. Eff ( cp :: CHILD_PROCESS
+                            , ref :: REF
+                            , err :: EXCEPTION
+                            , buffer :: BUFFER
+                            , console :: CONSOLE
+                            | e
+                            )
+                            Unit
+type SimpleCallback = forall a. a -> CmdEff
 
-launch :: forall e. Command -> Eff e Unit
-launch command = do
-  let (Command cmd) = command
-  cp <- spawn cmd.command cmd.args cmd.opts
-  writeRef cmd.process cp
+-- | Launch a child process along with a callback
+launch :: forall a
+        . Command
+       -> (a -> CmdEff)
+       -> a
+       -> CmdEff
+launch (Command {command, args, opts, process, output}) cb a = do
+  cp <- spawn command args opts
+  writeRef process (Just cp)
   -- The output is accumulated to cmd.output each time the data event is caught
-  onData cp (onDataSave cmd.output)
+  onData (stdout cp) (onDataSave output)
   -- On success, call
   onExit cp \exit -> case exit of
-              Normally 0 -> case cmd.next of
-                              Just (Command x) -> cmd.success x
-                              Nothing -> log "All done"
-              Normally x -> cmd.failure $ error $ "command failed with ret code: " <> x
-              BySignal _ -> cmd.failure $ error $ "command failed due to signal: " <> (show exit)
+              Normally 0 -> cb a
+              Normally x -> log $ "command failed with ret code: " <> show x
+              BySignal _ -> log $ "command failed due to signal: " <> (show exit)
 
-main = do
-  let lastCmd = { command: "iostat"
+
+launch' :: Command -> CmdEff
+launch' (Command {command, args, opts, process, output}) = do
+  cp <- spawn command args opts
+  writeRef process (Just cp)
+  -- The output is accumulated to cmd.output each time the data event is caught
+  onData (stdout cp) (onDataSave output)
+  -- On success, call
+  onExit cp \exit -> case exit of
+              Normally 0 -> log "Program exited with ret code 0"
+              Normally x -> log $ "command failed with ret code: " <> (show x)
+              BySignal _ -> log $ "command failed due to signal: " <> (show exit)
+
+
+test = do
+  lastOutput <- newRef ""
+  lastProc <- newRef Nothing
+  sndOutput <- newRef ""
+  sndProc <- newRef Nothing
+  firstOutput <- newRef ""
+  firstProc <- newRef Nothing
+  let lastCmd = Command { command: "iostat"
                 , args: ["2", "2"]
                 , opts: defaultSpawnOptions
                 , combineErr: true
-                , output: newRef ""
-                , success: \x -> log "Sucess"
-                , failure: defaultFailure }
-      firstCmd = { command: "python"
+                , output: lastOutput
+                , process: lastProc
+                }
+      secondCmd = Command { command: "top"
+                          , args: ["-d", "1", "-n", "2"]
+                          , opts: defaultSpawnOptions
+                          , combineErr: true
+                          , output: sndOutput
+                          , process: sndProc
+                          }
+      firstCmd = Command { command: "python"
                  , args: ["-u", "/home/stoner/dumdum.py"]
                  , opts: defaultSpawnOptions
                  , combineErr: true
-                 , output: newRef ""
-                 , next: lastCmd
-                 , success: \cmd -> launch cmd
-                 , failure: defaultFailure }
-  launch firstCmd
+                 , output: firstOutput
+                 , process: firstProc
+                 }
+  launch firstCmd launch' lastCmd
+  log $ "Final output of first command:\n" <> output
