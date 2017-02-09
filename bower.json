@@ -28,7 +28,8 @@
     "purescript-st": "^2.0.0",
     "purescript-datetime": "^2.0.0",
     "purescript-now": "^2.0.0",
-    "purescript-aff": "^2.0.2"
+    "purescript-aff": "^2.0.2",
+    "purescript-lens": "^2.0.0"
   },
   "devDependencies": {
     "purescript-psci-support": "^2.0.0"

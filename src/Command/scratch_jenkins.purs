@@ -1,25 +1,21 @@
 module Command.Starter where
 
 import Prelude
-
-import Control.Monad.Aff
+import Command (CmdEff, Command(..), defErr, launch, makeOptsWithDir, showOutput)
+import Control.Monad.Aff (runAff, Aff)
 import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Console (log, CONSOLE)
 import Control.Monad.Eff.Exception (EXCEPTION)
-import Control.Monad.Eff.Ref (REF, Ref, readRef, writeRef, newRef, modifyRef)
-import Control.Monad.ST (ST, STRef, modifySTRef, newSTRef, readSTRef, runST)
-
+import Control.Monad.Eff.Ref (REF, Ref, writeRef, newRef)
 import Data.Either (Either(..), either)
 import Data.Foldable (foldl)
 import Data.Maybe (Maybe(..))
 import Data.String.Regex (Regex, regex, replace)
 import Data.String.Regex.Flags (noFlags)
-
-import Node.Buffer (BUFFER, toString, Buffer)
-import Node.ChildProcess (CHILD_PROCESS, ChildProcess, Exit(..), SpawnOptions, defaultSpawnOptions, onExit, spawn, stdout)
-import Node.Encoding (Encoding(..))
+import Node.Buffer (BUFFER)
+import Node.ChildProcess (CHILD_PROCESS, Exit(..), SpawnOptions, defaultSpawnOptions)
 import Node.Process (lookupEnv, PROCESS)
-import Node.Stream (onData)
+
 
 -- | First arg is default if second arg is Nothing
 default' :: String -> Maybe String -> String
@@ -48,119 +44,96 @@ onExitState ref exit = case exit of
     writeRef ref $ "" <> show sig
     log $ "Exited abnormally due to signal: " <> show exit
 
--- | Basically a wrapper around the spawn command.
--- | Takes a command, an array of arguments, and a record of options to pass to spawn.
--- | Sets a default exit and data handler
--- TODO: figure out a way to combine stdout and stderr
---launch :: String -> Array String -> SpawnOptions ->  Eff ( cp :: CHILD_PROCESS, console :: CONSOLE, err :: EXCEPTION
---                                                         , buffer :: BUFFER | e) ChildProcess
-launch :: forall e
-        . String
-       -> Array String
-       -> SpawnOptions
-       -> Eff (cp :: CHILD_PROCESS, console :: CONSOLE, err :: EXCEPTION, buffer :: BUFFER | e) ChildProcess
-launch cmd args opts = do
-  cmd' <- spawn cmd args opts
-  onExit cmd' defaultExitHdlr
-  -- onData takes a readable stream, and a function which takes a Buffer and returns an Eff of Unit.  But I need to save
-  -- off the output somewhere AND send it to log.
-  onData (stdout cmd') (toString UTF8 >=> log)
-  log $ "done with " <> cmd
-  pure cmd'
+-- | Creates a default Command object that can be passed to launch.  This only uses defaultSpawnOptions
+makeDefCmd :: forall e.  String -> Array String -> Maybe SpawnOptions -> Eff (ref :: REF | e) Command
+makeDefCmd c args opts = do
+  op <- newRef ""
+  proc <- newRef Nothing
+  let opt = case opts of
+              (Just o) -> o
+              Nothing -> defaultSpawnOptions
+      cmd = Command { command: c
+                    , args: args
+                    , opts: opt
+                    , combineErr: true
+                    , output: op
+                    , process: proc
+                    }
+  pure cmd
 
--- | Function to save data from a buffer into an STRef
-onDataSave :: forall e
-            . Ref String
-           -> Buffer
-           -> Eff ( ref :: REF, buffer :: BUFFER, console :: CONSOLE | e) Unit
-onDataSave ref buff = do
-  bdata <- toString UTF8 buff
-  modified <- modifyRef ref \current -> current <> bdata
-  --log $ "Data as of now:\n" <> modified
-  pure unit
+type ProcEffect e = ( process :: PROCESS
+                    , ref :: REF
+                    , buffer :: BUFFER
+                    , cp :: CHILD_PROCESS
+                    , err :: EXCEPTION
+                    , console :: CONSOLE
+                    | e
+                    )
 
--- | Return type object that contains the ChildProcess value and a mutable saved state
--- newtype SubProc h = SubProc { process :: ChildProcess, saved :: STRef h String }
--- | A command which will launch a subprocess and save the stdout of the running process.
--- | Takes the command to run, an array of arguments, and a record of the options for the command to run with
-run :: forall e
-     . Ref String              -- The saved output of the command
-    -> String                      -- The command to run
-    -> Array String                -- The array of arguments to pass to the command
-    -> SpawnOptions                -- An object containing the options to run the process with
-    -> Eff ( console :: CONSOLE
-           , cp :: CHILD_PROCESS
-           , buffer :: BUFFER
-           , err :: EXCEPTION
-           , ref :: REF
-           | e
-           )
-           ChildProcess
-run st cmd args opts = do
-  procState <- newRef ""
-  let cb = onDataSave st
-      eh = onExitState procState
-  cmd' <- spawn cmd args opts
-  onExit cmd' eh
-  onData (stdout cmd') cb
-  log $ "done with " <> cmd
-  pure cmd'
-
--- TODO: Write a function that can pipe information to the stdin of the child process, for example if the child process
--- prompts in an interactive manner
-
-
--- FIXME: replace this with a regular http GET instead of shelling out to wget
--- | gets the pub and pvt keys
-getAutoKey :: forall e
-            . String                      -- | name of the key
-           -> String                      -- | where to save file to
-           -> Eff ( cp :: CHILD_PROCESS
-                  , console :: CONSOLE
-                  , err :: EXCEPTION
-                  , buffer :: BUFFER
-                  | e) ChildProcess
-getAutoKey keyname output = do
-  let args = ["-nv", "http://auto-services.usersys.redhat.com/rhsm/keys/" <> keyname, "-O", output]
-  launch "wget" args defaultSpawnOptions
-
--- | Does a git checkout in the current working directory
-gitCheckout :: forall e
-             . Array String
-            -> Eff ( cp :: CHILD_PROCESS, console :: CONSOLE, err :: EXCEPTION, buffer :: BUFFER | e) ChildProcess
-gitCheckout args = do
-  launch "git" args defaultSpawnOptions
-
--- | Remove reults from a prior run and avoid failed jobs due to missing result files
-cleanup :: forall e
-         . Eff ( process :: PROCESS
-               , cp :: CHILD_PROCESS
-               , console :: CONSOLE
-               , err :: EXCEPTION
-               , buffer :: BUFFER | e) Unit
-cleanup = do
+-- | Remove results from a prior run and avoid failed jobs due to missing result files
+-- cleanup :: forall e. Eff (ProcEffect e) (Canceler (ProcEffect e))
+cleanAndCompile :: forall e. Eff (ProcEffect e) (Array Command)
+cleanAndCompile = do
   workspace <- lookupEnv "WORKSPACE"
-  -- TODO: replace this with purescript-node-fs unlink command
-  launch "rm" ["-rf", "test-output/*"] defaultSpawnOptions
-  -- TODO: replace this with the purescript-node-fs mkdir
-  launch "mkdir" ["-p", "test-output/html"] defaultSpawnOptions
-  launch "touch" ["test-output/registration_report.html", "test-output/hw_info_dump.tar"] defaultSpawnOptions
-  log "end of cleanup"
+  case workspace of
+    (Just s) -> log $ "Workspace is " <> s
+    Nothing -> log "No workspace defined"
+  rm <- makeDefCmd "rm" ["-rf", "test-output/*"] Nothing
+  mkdir <- makeDefCmd "mkdir" ["-p", "test-output/html"] Nothing
+  touch <- makeDefCmd "touch" ["test-output/registration_report.html", "test-output/hw_info_dump.tar"] Nothing
+  leinClean <- makeDefCmd "lein" ["clean"]  (makeOptsWithDir "/home/stoner/Projects/rhsm-qe")
+  leinDeps <- makeDefCmd "lein" ["deps"] (makeOptsWithDir "/home/stoner/Projects/rhsm-qe")
+  leinCompile <- makeDefCmd "lein" ["compile"] (makeOptsWithDir "/home/stoner/Projects/rhsm-qe")
+  let cleanup' = do
+        rm' <- launch rm
+        mkdir' <- launch mkdir
+        touch' <- launch touch
+        clean <- launch leinClean
+        deps <- launch leinDeps
+        lc <- launch leinCompile
+        pure touch
+  cancelClean <- runAff defErr showOutput cleanup'
+  pure [rm, mkdir, touch, leinClean, leinDeps, leinCompile]
 
 -- | compile with lein
-compile :: forall e. Eff (cp :: CHILD_PROCESS, console :: CONSOLE, err :: EXCEPTION, buffer :: BUFFER | e) Unit
+compile :: forall e. Eff (ref :: REF | e) (Aff (CmdEff e) Command)
 compile = do
-  launch "lein" ["clean"] defaultSpawnOptions
-  launch "lein" ["deps"] defaultSpawnOptions
-  launch "lein" ["compile"] defaultSpawnOptions
-  log "end of lein compile"
+  leinClean <- makeDefCmd "lein" ["clean"] Nothing
+  leinDeps <- makeDefCmd "lein" ["deps"] Nothing
+  leinCompile <- makeDefCmd "lein" ["compile"] Nothing
+  let compile' = do
+        clean <- launch leinClean
+        deps <- launch leinDeps
+        lc <- launch leinCompile
+        pure leinCompile
+  pure compile'
+
+-- | Function to create a Command to retrieve a key
+getAutoKey :: forall e. String -> String -> Eff (ref :: REF | e) Command
+getAutoKey keyname output = do
+  ak <- makeDefCmd "wget" ["-nv", "http://auto-services.usersys.redhat.com/rhsm/keys/" <> keyname, "-O", output] Nothing
+  pure ak
+
+-- | Gets the public and private keys
+getAutoKeys :: forall e. Eff (ProcEffect e) (Array Command)
+getAutoKeys = do
+  pubCmd <- getAutoKey "rhsm-qe.pub" "/tmp/rhsm-qe.pub"
+  log $ show pubCmd
+  pvtCmd <- getAutoKey "rhsm-qe" "/tmp/rhsm-qe"
+  let getAutoKeys' = do
+        akPub <- launch pubCmd
+        akPvt <- launch pvtCmd
+        pure akPvt
+  cancel <- runAff defErr showOutput getAutoKeys'
+  pure [pubCmd, pvtCmd]
+
 
 -- TODO: Need to redo this since launch returns Unit instead of String.  Need to change the onData handler so that
 -- it saves the stdout to a string.
-getClasspath :: forall e. Eff (cp :: CHILD_PROCESS, console :: CONSOLE, err :: EXCEPTION, buffer :: BUFFER | e) String
+getClasspath :: forall e. Eff (ref :: REF| e) Command
 getClasspath = do
-  launch "lein" ["classpath"] defaultSpawnOptions
-  pure "TODO"
+  leinCP <- makeDefCmd "lein" ["classpath"] (makeOptsWithDir "/home/stoner/Projects/rhsm-qe")
+  pure leinCP
 
 envVars :: Array String
 envVars = [ "QUICK_BUILD"
@@ -174,13 +147,14 @@ envVars = [ "QUICK_BUILD"
           ]
 
 -- | The main script that kicks everything off
-main :: forall e. Eff ( process :: PROCESS
+test :: forall e. Eff ( process :: PROCESS
                       , cp :: CHILD_PROCESS
                       , console :: CONSOLE
                       , err :: EXCEPTION
                       , buffer :: BUFFER
+                      , ref :: REF
                       | e) Unit
-main = do
+test = do
   -- This just feels really ugly.  I should be able to put all these strings into a map.  I'd prefer to have these
   -- stored in a map where the keys are QUICK_BUILD etc, and the values are from the env.
   quick_build <- lookupEnv "QUICK_BUILD"
@@ -192,6 +166,7 @@ main = do
   build_number <- lookupEnv "BUILD_NUMBER"
   job_name <- lookupEnv "JOB_NAME"
   c_xunit <- lookupEnv "CURRENT_XUNIT"
+
   let auto_branch' = case auto_branch of
                        (Just ab) -> ab
                        _ -> ""
@@ -218,18 +193,17 @@ main = do
       re = regex """^https""" noFlags
       current' = replace <$> re <*> pure "http" <*> pure current_xunit
 
+  log $ "auto_branch = " <> auto_branch'
   log $ "server_branch = " <> server_branch'
   log $ foldl (\acc n -> acc <> n <> ",") "git_args = [" git_args <> "]"
   log $ "current' = " <> case current' of
                            (Left e) -> e
                            (Right r) -> r
 
-  -- Do the checkout, grab the keys, cleanup and compile
-  gitCheckout git_args
-  getAutoKey "rhsm-qe.pub" ".ssh/rhsm-qe.pub"
-  getAutoKey "rhsm-qe" ".ssh/rhsm-qe"
-  cleanup
-  compile
+  log "Cleaning test-output"
+  cleanAndCompile
+  log "Getting the public and private keys"
+  getAutoKeys
 
   -- Kick off the test
   -- java -cp "`lein classpath`" "${JAVAARGS[@]}" org.testng.TestNG "${TESTNGARGS[@]}"  $TEST_SUITES || true
@@ -247,20 +221,3 @@ main = do
   -}
 
   log "Done"
-
-testing :: Eff ( console :: CONSOLE
-               , buffer :: BUFFER
-               , cp :: CHILD_PROCESS
-               , err :: EXCEPTION
-               , ref :: REF
-               ) Unit
-testing = do
-  st <- newRef ""
-  proc <- run st "iostat" ["2", "5"] defaultSpawnOptions
-  -- TODO: The problem is that if I try to get the st like this:
-  output <- readRef st
-  log output
-  -- the problem is that the proc ChildProcess hasn't finished running, but I'm already asking for the state (which has
-  -- the so far saved output from the proc process).  So, I believe what I need to do here is use purescript-aff and
-  -- call run via the later function.
-  pure unit
