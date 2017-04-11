@@ -14,7 +14,7 @@ import Partial.Unsafe (unsafeCrashWith)
 
 handler :: forall eff. Request -> Response -> Eff (http :: HTTP | eff) Unit
 handler req res = do
-  setStatusCode res 200
+  _ <- setStatusCode res 200
   -- Notice we dont have to do let/in here.  The inputStream and outputStream are in scope without the 'in'
   let inputStream  = requestAsStream req  -- Convert the Request and Response objects as node streams
       outputStream = responseAsStream res
@@ -27,9 +27,9 @@ handler req res = do
             , "  <input type='submit'>"
             , "</form>"
             ]
-      setHeader res "Content-Type" "text/html"
+      _ <- setHeader res "Content-Type" "text/html"
       -- Use the Response object as a Stream.  Takes the stream, an encoding, the string
-      writeString outputStream UTF8 html (pure unit)
+      _ <- writeString outputStream UTF8 html (pure unit)
       end outputStream (pure unit)
     "POST" -> void $ pipe inputStream outputStream
     -- FIXME: Add all other request types like HEAD

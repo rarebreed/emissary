@@ -9,6 +9,7 @@
 -- | is a problem for callbacks.  The onExit function has the same problem.
 module Command where
 
+import Control.Bind ((>=>))
 import Control.Monad.Aff (Aff, makeAff, runAff)
 import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Class (liftEff)
@@ -22,17 +23,22 @@ import Node.Buffer (Buffer, BUFFER, toString)
 import Node.ChildProcess (SpawnOptions, defaultSpawnOptions, spawn, ChildProcess, CHILD_PROCESS, onExit, Exit(..), stdout)
 import Node.Encoding (Encoding(..))
 import Node.Stream (onData)
-import Optic.Lens (lens)
-import Prelude (Unit, bind, pure, show, unit, ($), (<>))
+import Prelude (Unit, bind, pure, show, ($), (<>))
+
+
+type Cmd = { command :: String
+           , args :: Array String
+           , opts :: SpawnOptions
+           , combineErr :: Boolean
+           , output :: Ref String -- FIXME: Make this a selectable type (eg Duplex, Socket, or other source)
+           , process :: Ref (Maybe ChildProcess)
+           , save :: Boolean
+           }
+
 
 -- | Represents how to run a command
-newtype Command = Command  { command :: String
-                           , args :: Array String
-                           , opts :: SpawnOptions
-                           , combineErr :: Boolean
-                           , output :: Ref String -- FIXME: Make this a selectable type (eg Duplex, Socket, or other source)
-                           , process :: Ref (Maybe ChildProcess)
-                           }
+newtype Command = Command Cmd
+
 
 instance showCommand :: Show Command where
   show (Command cmd) =  "{ command: " <> cmd.command <> "\n"
@@ -43,8 +49,21 @@ instance showCommand :: Show Command where
 getCmdOpt :: Command -> SpawnOptions
 getCmdOpt (Command {opts}) = opts
 
+
+setCmdOpt :: Command -> SpawnOptions -> Command
+setCmdOpt (Command c) sopt = Command { command: c.command
+                                     , args: c.args
+                                     , opts: sopt
+                                     , combineErr: c.combineErr
+                                     , output: c.output
+                                     , process: c.process
+                                     , save: c.save
+                                     }
+
+
 setOptDir :: SpawnOptions -> Maybe String -> SpawnOptions
 setOptDir o@{cwd: c} dir = {cwd: dir, stdio: o.stdio, env: o.env, detached: o.detached, uid: o.uid, gid: o.gid}
+
 
 setCmdDir :: Command -> Maybe String -> Command
 setCmdDir c@(Command cmd) dir = Command { command: cmd.command
@@ -53,7 +72,19 @@ setCmdDir c@(Command cmd) dir = Command { command: cmd.command
                                         , combineErr: cmd.combineErr
                                         , output: cmd.output
                                         , process: cmd.process
+                                        , save: cmd.save
                                         }
+
+
+setCmdSave :: Command -> Boolean -> Command
+setCmdSave c@(Command cmd) enable = Command { command: cmd.command
+                                            , args: cmd.args
+                                            , opts: cmd.opts
+                                            , combineErr: cmd.combineErr
+                                            , output: cmd.output
+                                            , process: cmd.process
+                                            , save: enable
+                                            }
 
 makeOptsWithDir :: String -> Maybe SpawnOptions
 makeOptsWithDir dir = (Just $ setOptDir defaultSpawnOptions (Just dir))
@@ -69,32 +100,35 @@ onDataSave ref buff = do
   modified <- modifyRef ref \current -> current <> bdata
   combined <- readRef ref
   log bdata
-  pure unit
+  --pure unit
 
-
+-- | These are all the effects of running a child process.  It has a REF side effect due to "mutating" the
+-- | Command object, it has a CHILD_PROCESS due to calling node's spawn function, it has EXCEPTION, because the spawn
+-- | could fail, it has BUFFER, because the stdout of the ChildProcess is being saved to an IO Buffer, and it has
+-- | CONSOLE because output is logged.
 type CmdEff e = ( cp :: CHILD_PROCESS
                 , ref :: REF
-                , err :: EXCEPTION
+                , exception :: EXCEPTION
                 , buffer :: BUFFER
                 , console :: CONSOLE
                 | e
                 )
 
+
 defErr :: forall e. Error -> Eff (console :: CONSOLE | e) Unit
 defErr err = log $ message err
+
 
 showOutput :: forall e. Command -> Eff (ref :: REF, console :: CONSOLE | e) Unit
 showOutput (Command {output}) = do
   out <- readRef output
   log out
 
+
 getOutput :: forall e. Command -> Eff (ref :: REF, console :: CONSOLE | e) String
 getOutput (Command {output}) = do
   out <- readRef output
   pure out
-
-
---workDir :: Lens Command
 
 
 -- | Launch a child process along with an error callback and success callback
@@ -103,11 +137,12 @@ launchImpl :: forall e
            -> (Error -> Eff (CmdEff e) Unit)
            -> (Command -> Eff (CmdEff e) Unit)
            -> Eff (CmdEff e) Unit
-launchImpl cmd@(Command {command, args, opts, process, output}) ecb scb = do
+launchImpl cmd@(Command {command, args, opts, process, output, save}) ecb scb = do
   cp <- spawn command args opts
-  writeRef process (Just cp)
+  -- Store the cp ChildProcess into process
+  _ <- writeRef process (Just cp)
   -- The output is accumulated to cmd.output each time the data event is caught
-  onData (stdout cp) (onDataSave output)
+  _ <- onData (stdout cp) if save then (onDataSave output) else (toString UTF8 >=> log)
   -- On finish, call
   onExit cp \exit -> case exit of
               Normally 0 -> (scb cmd)
@@ -117,7 +152,6 @@ launchImpl cmd@(Command {command, args, opts, process, output}) ecb scb = do
               BySignal _ -> do
                 let err = "command failed due to signal: " <> (show exit)
                 ecb $ error err
-
 
 
 -- asynchronous launch.  Ok, this was super confusing.  makeAff takes a function that takes two callbacks, one for
@@ -140,42 +174,25 @@ test = do
   sndProc <- newRef Nothing
   firstOutput <- newRef ""
   firstProc <- newRef Nothing
-  let lastCmd = Command { command: "iostat"
-                        , args: ["2", "3"]
-                        , opts: defaultSpawnOptions
-                        , combineErr: true
-                        , output: lastOutput
-                        , process: lastProc
+  let lastCmd = Command { command: "iostat", args: ["2", "3"], opts: defaultSpawnOptions, combineErr: true
+                        , output: lastOutput, process: lastProc, save: true
                         }
       -- FIXME: top has to run in the shell, which means we can't use spawn (AFAICT)
-      secondCmd = Command { command: "top"
-                          , args: ["-d", "1", "-n", "2"]
-                          , opts: defaultSpawnOptions
-                          , combineErr: true
-                          , output: sndOutput
-                          , process: sndProc
+      secondCmd = Command { command: "top", args: ["-d", "1", "-n", "2"], opts: defaultSpawnOptions, combineErr: true
+                          , output: sndOutput, process: sndProc, save: true
                           }
-      nameCmd = Command { command: "python"
-                        , args: ["-u", "/home/stoner/dummy.py"]
-                        , opts: defaultSpawnOptions
-                        , combineErr: true
-                        , output: firstOutput
-                        , process: firstProc
+      nameCmd = Command { command: "python", args: ["-u", "/home/stoner/dummy.py"], opts: defaultSpawnOptions
+                        , combineErr: true, output: firstOutput, process: firstProc, save: true
                         }
-      firstCmd = Command { command: "python"
-                 , args: ["-u", "/home/stoner/dumdum.py"]
-                 , opts: defaultSpawnOptions
-                 , combineErr: true
-                 , output: firstOutput
-                 , process: firstProc
-                 }
+      firstCmd = Command { command: "python", args: ["-u", "/home/stoner/dumdum.py"], opts: defaultSpawnOptions
+                         , combineErr: true, output: firstOutput, process: firstProc, save: true
+                         }
+      -- This is how we "serialize" the functions.  If we did one runAff per launch, they would still be run in
+      -- parallel.  So we essentially make a little function that contains what needs to be run
       runcmds = do
         pyproc <- launch firstCmd
         ioproc <- launch lastCmd
         pyproc2 <- launch nameCmd
         pure ioproc
-
-  runAff defErr showOutput runcmds
-
-  -- pyOut <- getOutput pyProc
+  _ <- runAff defErr showOutput runcmds
   liftEff $ log "done"

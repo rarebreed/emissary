@@ -1,17 +1,21 @@
 module Command.Starter where
 
 import Prelude
-import Command (CmdEff, Command(..), defErr, launch, makeOptsWithDir, showOutput)
+
+import Command (CmdEff, Command(..), defErr, getOutput, launch, makeOptsWithDir, showOutput)
+
 import Control.Monad.Aff (runAff, Aff)
 import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Console (log, CONSOLE)
 import Control.Monad.Eff.Exception (EXCEPTION)
 import Control.Monad.Eff.Ref (REF, Ref, writeRef, newRef)
+
 import Data.Either (Either(..), either)
 import Data.Foldable (foldl)
 import Data.Maybe (Maybe(..))
 import Data.String.Regex (Regex, regex, replace)
 import Data.String.Regex.Flags (noFlags)
+
 import Node.Buffer (BUFFER)
 import Node.ChildProcess (CHILD_PROCESS, Exit(..), SpawnOptions, defaultSpawnOptions)
 import Node.Process (lookupEnv, PROCESS)
@@ -47,43 +51,38 @@ onExitState ref exit = case exit of
 -- | Creates a default Command object that can be passed to launch.  This only uses defaultSpawnOptions
 makeDefCmd :: forall e.  String -> Array String -> Maybe SpawnOptions -> Eff (ref :: REF | e) Command
 makeDefCmd c args opts = do
-  op <- newRef ""
+  outp <- newRef ""
   proc <- newRef Nothing
   let opt = case opts of
               (Just o) -> o
               Nothing -> defaultSpawnOptions
-      cmd = Command { command: c
-                    , args: args
-                    , opts: opt
-                    , combineErr: true
-                    , output: op
-                    , process: proc
-                    }
+      cmd = Command { command: c, args: args, opts: opt, combineErr: true, output: outp, process: proc, save: true}
   pure cmd
 
 type ProcEffect e = ( process :: PROCESS
                     , ref :: REF
                     , buffer :: BUFFER
                     , cp :: CHILD_PROCESS
-                    , err :: EXCEPTION
+                    , exception :: EXCEPTION
                     , console :: CONSOLE
                     | e
                     )
 
 -- | Remove results from a prior run and avoid failed jobs due to missing result files
 -- cleanup :: forall e. Eff (ProcEffect e) (Canceler (ProcEffect e))
-cleanAndCompile :: forall e. Eff (ProcEffect e) (Array Command)
-cleanAndCompile = do
+cleanAndCompile :: forall e. String ->  Eff (ProcEffect e) String
+cleanAndCompile dir = do
   workspace <- lookupEnv "WORKSPACE"
   case workspace of
     (Just s) -> log $ "Workspace is " <> s
     Nothing -> log "No workspace defined"
-  rm <- makeDefCmd "rm" ["-rf", "test-output/*"] Nothing
-  mkdir <- makeDefCmd "mkdir" ["-p", "test-output/html"] Nothing
-  touch <- makeDefCmd "touch" ["test-output/registration_report.html", "test-output/hw_info_dump.tar"] Nothing
-  leinClean <- makeDefCmd "lein" ["clean"]  (makeOptsWithDir "/home/stoner/Projects/rhsm-qe")
-  leinDeps <- makeDefCmd "lein" ["deps"] (makeOptsWithDir "/home/stoner/Projects/rhsm-qe")
-  leinCompile <- makeDefCmd "lein" ["compile"] (makeOptsWithDir "/home/stoner/Projects/rhsm-qe")
+  rm <- makeDefCmd "rm" ["-rf", "test-output/*"] Nothing --(makeOptsWithDir dir)
+  mkdir <- makeDefCmd "mkdir" ["-p", "test-output/html"] Nothing --(makeOptsWithDir dir)
+  touch <- makeDefCmd "touch" ["test-output/registration_report.html", "test-output/hw_info_dump.tar"] Nothing --(makeOptsWithDir dir)
+  leinClean <- makeDefCmd "lein" ["clean"]  (makeOptsWithDir dir)
+  leinDeps <- makeDefCmd "lein" ["deps"] (makeOptsWithDir dir)
+  leinCompile <- makeDefCmd "lein" ["compile"] (makeOptsWithDir dir)
+  leinCP <- makeDefCmd "lein" ["classpath"] (makeOptsWithDir dir)
   let cleanup' = do
         rm' <- launch rm
         mkdir' <- launch mkdir
@@ -91,9 +90,11 @@ cleanAndCompile = do
         clean <- launch leinClean
         deps <- launch leinDeps
         lc <- launch leinCompile
+        lpcmd <- launch leinCP
         pure touch
   cancelClean <- runAff defErr showOutput cleanup'
-  pure [rm, mkdir, touch, leinClean, leinDeps, leinCompile]
+  classpath <- getOutput leinCP
+  pure classpath
 
 -- | compile with lein
 compile :: forall e. Eff (ref :: REF | e) (Aff (CmdEff e) Command)
@@ -127,7 +128,6 @@ getAutoKeys = do
   cancel <- runAff defErr showOutput getAutoKeys'
   pure [pubCmd, pvtCmd]
 
-
 -- TODO: Need to redo this since launch returns Unit instead of String.  Need to change the onData handler so that
 -- it saves the stdout to a string.
 getClasspath :: forall e. Eff (ref :: REF| e) Command
@@ -136,25 +136,39 @@ getClasspath = do
   pure leinCP
 
 envVars :: Array String
-envVars = [ "QUICK_BUILD"
-          , "AUTOMATION_BRANCH"
-          , "SERVER_BRANCH"
-          , "RPM_URLS"
-          , "JENKINS_URL"
-          , "BUILD_NUMBER"
-          , "JOB_NAME"
-          , "CURRENT_XUNIT"
-          ]
+envVars = [ "QUICK_BUILD", "AUTOMATION_BRANCH", "SERVER_BRANCH", "RPM_URLS", "JENKINS_URL", "BUILD_NUMBER"
+          , "JOB_NAME", "CURRENT_XUNIT"]
+
+javaArgs :: String -> Array String
+javaArgs cp = [ "-cp", cp
+              , "-Xmx4096m"
+              ]
+
+listeners :: Array String
+listeners = [ "com.redhat.qe.auto.bugzilla.BugzillaTestNGListener"
+            , "org.uncommons.reportng.HTMLReporter,org.testng.reporters.XMLReporter"
+            ]
+
+testNGArgs :: Array String
+testNGArgs = [ "-usedefaultlisteners"
+             , "false"
+             , "-reporter"
+             , "com.github.redhatqe.polarize.junitreporter.XUnitReporter"
+             , "-listener"
+             , foldl (\acc n -> acc <> "," <> n) "com.redhat.qe.auto.testng.TestNGListener" listeners
+             ]
+
 
 -- | The main script that kicks everything off
-test :: forall e. Eff ( process :: PROCESS
-                      , cp :: CHILD_PROCESS
-                      , console :: CONSOLE
-                      , err :: EXCEPTION
-                      , buffer :: BUFFER
-                      , ref :: REF
-                      | e) Unit
-test = do
+scratch :: forall e. Eff ( process :: PROCESS
+                         , cp :: CHILD_PROCESS
+                         , console :: CONSOLE
+                         , exception :: EXCEPTION
+                         , buffer :: BUFFER
+                         , ref :: REF
+                         | e
+                         ) Unit
+scratch = do
   -- This just feels really ugly.  I should be able to put all these strings into a map.  I'd prefer to have these
   -- stored in a map where the keys are QUICK_BUILD etc, and the values are from the env.
   quick_build <- lookupEnv "QUICK_BUILD"
@@ -170,18 +184,15 @@ test = do
   let auto_branch' = case auto_branch of
                        (Just ab) -> ab
                        _ -> ""
-      server_branch' = if (default' "false" quick_build) == "false"
-                         then ""
-                         else default' "master" server_branch
-      rpm_urls' = if (default' "" quick_build) == ""
-                    then ""
-                    else default' "" rpm_urls
+      server_branch' = if (default' "false" quick_build) == "false" then "" else default' "master" server_branch
+      rpm_urls' = if (default' "" quick_build) == "" then "" else default' "" rpm_urls
       git_args = ["checkout", "upstream/" <> (default' "master" auto_branch)]
 
       -- All of these will be concatenated into a Maybe String
-      parts = [jenkins_url, Just "view/Scratch/job/", job_name, Just "/", build_number,
-               Just "/artifact/test-output/testng-polarion.xml"]
+      parts = [jenkins_url, Just "view/Scratch/job/", job_name, Just "/", build_number
+              , Just "/artifact/test-output/testng-polarion.xml"]
       accum = foldl (\acc n -> append <$> acc <*> n) (Just "") parts
+      workdir = "/home/stoner/Projects/rhsm-qe"
 
       current_xunit :: String
       current_xunit = case c_xunit of
@@ -200,17 +211,20 @@ test = do
                            (Left e) -> e
                            (Right r) -> r
 
-  log "Cleaning test-output"
-  cleanAndCompile
+  -- FIXME:  Currently, the getting of the keys will be run concurrently with cleaning, compiling and executing java
+  -- however, these should be serialized.
   log "Getting the public and private keys"
-  getAutoKeys
+  _ <- getAutoKeys
+  log "Cleaning test-output"
+  -- Cleaning and compiling will be run simultaneously with getting the auto keys
+  wd <- cleanAndCompile workdir
+  log $ show "Cleaned up" <> wd
+
 
   -- Kick off the test
   -- java -cp "`lein classpath`" "${JAVAARGS[@]}" org.testng.TestNG "${TESTNGARGS[@]}"  $TEST_SUITES || true
   -- TODO: Set any JAVA_ARGS needed.  Since we are using the automation.properties file, we need some way to set this
   -- TODO: Set the TESTNGARGS and get the TEST_SUITES from the test_suites Maybe String
-  -- TODO: Need to create a version of spawn with an onData that captures stdout to a string.  However onData seems to
-  --       return Unit.
 
   {- There will be a file called polarize.properties that exists in $WORKSPACE.  If CURRENT_XUNIT from the job has no
   value, use the default.  Then write the following into the polarize.properties file.
@@ -219,5 +233,3 @@ test = do
   echo "JENKINSJOBS=${BUILD_URL}" >> polarize.properties
   echo "NOTES=${BUILD_URL}TestNG_Report" >> polarize.properties
   -}
-
-  log "Done"
