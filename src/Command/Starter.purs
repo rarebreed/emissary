@@ -2,13 +2,22 @@ module Command.Starter where
 
 import Prelude
 
-import Command (CmdEff, Command(..), defErr, getOutput, launch, makeOptsWithDir, showOutput)
+import Command.Command ( CmdEff
+                       , ProcEffect
+                       , Command
+                       , defErr
+                       , getOutput
+                       , launch
+                       , makeOptsWithDir
+                       , showOutput
+                       , makeDefCmd
+                       )
 
 import Control.Monad.Aff (runAff, Aff)
 import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Console (log, CONSOLE)
 import Control.Monad.Eff.Exception (EXCEPTION)
-import Control.Monad.Eff.Ref (REF, Ref, writeRef, newRef)
+import Control.Monad.Eff.Ref (REF)
 
 import Data.Either (Either(..), either)
 import Data.Foldable (foldl)
@@ -17,7 +26,7 @@ import Data.String.Regex (Regex, regex, replace)
 import Data.String.Regex.Flags (noFlags)
 
 import Node.Buffer (BUFFER)
-import Node.ChildProcess (CHILD_PROCESS, Exit(..), SpawnOptions, defaultSpawnOptions)
+import Node.ChildProcess (CHILD_PROCESS)
 import Node.Process (lookupEnv, PROCESS)
 
 
@@ -31,42 +40,6 @@ orDefault :: Maybe String -> String -> Either String String
 orDefault Nothing default = Left default
 orDefault (Just r) _ = Right r
 
--- | A default exit handler for launching commands
-defaultExitHdlr :: forall e. Exit -> Eff (console :: CONSOLE | e) Unit
-defaultExitHdlr exit = case exit of
-      Normally x -> log $ "Got exit code of: " <> show x
-      _ -> log $ "Exited due to signal: " <> show exit
-
--- | An exit handler which takes a reference of an initial value of an empty string, indicating the (unfinished) state.
--- | Allows the caller of onExitState to pass in a ref and check this ref
-onExitState :: forall e. Ref String -> Exit -> Eff (ref :: REF, console :: CONSOLE | e) Unit
-onExitState ref exit = case exit of
-  Normally x -> do
-    writeRef ref $ show x
-    log $ "Got exit code of: " <> show x
-  BySignal sig ->  do
-    writeRef ref $ "" <> show sig
-    log $ "Exited abnormally due to signal: " <> show exit
-
--- | Creates a default Command object that can be passed to launch.  This only uses defaultSpawnOptions
-makeDefCmd :: forall e.  String -> Array String -> Maybe SpawnOptions -> Eff (ref :: REF | e) Command
-makeDefCmd c args opts = do
-  outp <- newRef ""
-  proc <- newRef Nothing
-  let opt = case opts of
-              (Just o) -> o
-              Nothing -> defaultSpawnOptions
-      cmd = Command { command: c, args: args, opts: opt, combineErr: true, output: outp, process: proc, save: true}
-  pure cmd
-
-type ProcEffect e = ( process :: PROCESS
-                    , ref :: REF
-                    , buffer :: BUFFER
-                    , cp :: CHILD_PROCESS
-                    , exception :: EXCEPTION
-                    , console :: CONSOLE
-                    | e
-                    )
 
 -- | Remove results from a prior run and avoid failed jobs due to missing result files
 -- cleanup :: forall e. Eff (ProcEffect e) (Canceler (ProcEffect e))

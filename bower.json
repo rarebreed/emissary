@@ -25,7 +25,9 @@
     "purescript-now": "^3.0.0",
     "purescript-lens": "^3.0.0",
     "purescript-foreign": "^4.0.0",
-    "purescript-node-process": "^4.0.0"
+    "purescript-node-process": "^4.0.0",
+    "purescript-node-path": "^2.0.0",
+    "purescript-node-fs-aff": "^4.0.0"
   },
   "devDependencies": {
     "purescript-psci-support": "^3.0.0"

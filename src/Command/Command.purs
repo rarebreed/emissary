@@ -7,7 +7,7 @@
 -- | and in node has to take a callback which returns nothing (Unit).  This is a problem because how can we save any
 -- | data?  That means we have to use a Ref or STRef (or maybe a Writer monad) to accumulate the data.  Moreover, this
 -- | is a problem for callbacks.  The onExit function has the same problem.
-module Command where
+module Command.Command where
 
 import Control.Bind ((>=>))
 import Control.Monad.Aff (Aff, makeAff, runAff)
@@ -23,7 +23,8 @@ import Node.Buffer (Buffer, BUFFER, toString)
 import Node.ChildProcess (SpawnOptions, defaultSpawnOptions, spawn, ChildProcess, CHILD_PROCESS, onExit, Exit(..), stdout)
 import Node.Encoding (Encoding(..))
 import Node.Stream (onData)
-import Prelude (Unit, bind, pure, show, ($), (<>))
+import Node.Process (PROCESS)
+import Prelude (Unit, bind, pure, show, ($), (<>), discard)
 
 
 type Cmd = { command :: String
@@ -113,6 +114,46 @@ type CmdEff e = ( cp :: CHILD_PROCESS
                 , console :: CONSOLE
                 | e
                 )
+
+
+type ProcEffect e = ( process :: PROCESS
+                    , ref :: REF
+                    , buffer :: BUFFER
+                    , cp :: CHILD_PROCESS
+                    , exception :: EXCEPTION
+                    , console :: CONSOLE
+                    | e
+                    )
+
+-- | A default exit handler for launching commands
+defaultExitHdlr :: forall e. Exit -> Eff (console :: CONSOLE | e) Unit
+defaultExitHdlr exit = case exit of
+      Normally x -> log $ "Got exit code of: " <> show x
+      _ -> log $ "Exited due to signal: " <> show exit
+
+
+-- | An exit handler which takes a reference of an initial value of an empty string, indicating the (unfinished) state.
+-- | Allows the caller of onExitState to pass in a ref and check this ref
+onExitState :: forall e. Ref String -> Exit -> Eff (ref :: REF, console :: CONSOLE | e) Unit
+onExitState ref exit = case exit of
+  Normally x -> do
+    writeRef ref $ show x
+    log $ "Got exit code of: " <> show x
+  BySignal sig ->  do
+    writeRef ref $ "" <> show sig
+    log $ "Exited abnormally due to signal: " <> show exit
+
+
+-- | Creates a default Command object that can be passed to launch.  This only uses defaultSpawnOptions
+makeDefCmd :: forall e.  String -> Array String -> Maybe SpawnOptions -> Eff (ref :: REF | e) Command
+makeDefCmd c args opts = do
+  outp <- newRef ""
+  proc <- newRef Nothing
+  let opt = case opts of
+              (Just o) -> o
+              Nothing -> defaultSpawnOptions
+      cmd = Command { command: c, args: args, opts: opt, combineErr: true, output: outp, process: proc, save: true}
+  pure cmd
 
 
 defErr :: forall e. Error -> Eff (console :: CONSOLE | e) Unit
