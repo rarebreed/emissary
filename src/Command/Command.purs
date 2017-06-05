@@ -20,7 +20,15 @@ import Data.Foldable (foldl)
 import Data.Maybe (Maybe(..))
 import Data.Show (class Show)
 import Node.Buffer (Buffer, BUFFER, toString)
-import Node.ChildProcess (SpawnOptions, defaultSpawnOptions, spawn, ChildProcess, CHILD_PROCESS, onExit, Exit(..), stdout)
+import Node.ChildProcess ( SpawnOptions
+                         , defaultSpawnOptions
+                         , spawn
+                         , ChildProcess
+                         , CHILD_PROCESS
+                         , onExit
+                         , Exit(..)
+                         , stdout
+                         )
 import Node.Encoding (Encoding(..))
 import Node.Stream (onData)
 import Node.Process (PROCESS)
